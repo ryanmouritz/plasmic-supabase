@@ -125,6 +125,11 @@ export const SupabaseProviderMeta : CodeComponentMeta<SupabaseProviderProps> = {
       description:
         "Filters to execute during the query. Acceptable values are eq, neq, gt, lt, gte, lte.",
     },
+    onError: {
+      type: "eventHandler",
+      argTypes: [{name: 'supabaseProviderError', type: 'object'}],
+      required: false,
+    },
     initialSortField: "string",
     initialSortDirection: {
       type: "choice",
@@ -227,6 +232,7 @@ export const SupabaseProviderMeta : CodeComponentMeta<SupabaseProviderProps> = {
       argTypes: [
         { name: "rowForSupabase", type: "object", displayName: "Row object to send to Supabase" },
         { name: "optimisticRow", type: "object", displayName: "Optimistic new row object (optional)"},
+        { name: "shouldReturnRow", type: "boolean", displayName: "Return added row/s? (Returns null if false)"}
       ],
     },
     editRow: {
