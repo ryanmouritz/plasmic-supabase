@@ -21,7 +21,10 @@ type RowWithoutId = {
     [key: string]: any;
 }
   
-type Rows = Row[] | null;
+type Rows = {
+    count: number
+    data: Row[] | null
+};
 
 type SupabaseProviderError = {
     errorId: string;
@@ -34,8 +37,8 @@ type SupabaseProviderError = {
 }
 
 interface Actions {
-    //TODO: with optionality turned off (ie. no .select() after the .insert or .update), would add and edit return null or the standard api response code like 200 etc?
-    addRow(rowForSupabase: any, optimisticRow: any): Promise<Rows | null | SupabaseProviderError>;
+    //TODO: with optionality turned off (ie. no .select() after the .insert or .update), would add and edit return null or the standard api response code like 200 etc? A: Rows can be null and also it could be an empty Array of Rows. 
+    addRow(rowForSupabase: any, optimisticRow: any, shouldReturnRow: boolean, disableRefetchAfterMutation: boolean): Promise<Rows | SupabaseProviderError>; //negative bool arg naming because plasmic doesn't allow default values for action args
     editRow(rowForSupabase: any, optimisticRow: any): Promise<Row | SupabaseProviderError>;
     deleteRow(id: any): Promise<Row | SupabaseProviderError>;
 }
@@ -45,6 +48,9 @@ export interface SupabaseProviderProps {
     tableName: string;
     columns: string;
     filters: Filter[];
+    limit?: number;
+    offset?: number;
+    returnCount?: "none" | "exact" | "planned" | "estimated";
     onError?: ( supabaseProviderError: SupabaseProviderError ) => void;
     simulateRandomMutationErrors: boolean;
     queryName: string;
@@ -59,6 +65,9 @@ export const SupabaseProvider = forwardRef<Actions, SupabaseProviderProps>(
             tableName,
             columns,
             filters,
+            limit,
+            offset,
+            returnCount,
             onError,
             simulateRandomMutationErrors,
             queryName,
@@ -74,7 +83,7 @@ export const SupabaseProvider = forwardRef<Actions, SupabaseProviderProps>(
 
             setIsMutating(false);
             setFetchError(null);
-
+            
             try {
                 //Create new supabase client
                 const supabase = createClient();
@@ -87,19 +96,23 @@ export const SupabaseProvider = forwardRef<Actions, SupabaseProviderProps>(
                     columns,
                     dataForSupabase: null,
                     filters: memoizedFilters,
+                    limit,
+                    offset,
+                    returnCount,
                 });
 
                 //Initiate the query and await the response
-                const { data, error } = await supabaseQuery;
+                const { data, error, count } = await supabaseQuery;
 
                 if (error) {
                     throw error;
                 }
 
-                return data
+                return { data, count }
 
             } catch(err) {
                 //build the error object
+                console.error(err)
                 const supabaseProviderError = {
                     errorId: uuid(),
                     summary: 'Error fetching records',
@@ -120,8 +133,8 @@ export const SupabaseProvider = forwardRef<Actions, SupabaseProviderProps>(
 
         //Use the useMutablePlasmicQueryData hook to fetch the data
         //Works very similar to useSWR
-        //Note that we pass filters along with queryName to ensure we create a new cache when filters change
-        //Avoiding issues like flash of old content while data is fetching with new filters
+        //Note that we pass filters, limit and offset along with queryName to ensure we create a new cache when they change
+        //Avoiding issues like flash of old content while data is fetching with new filters or data is paginated
         //And the useMutablePlasmicQueryData not being recalled so an old version of fetchData with wrong filters is used
         const {
             data,
@@ -130,14 +143,14 @@ export const SupabaseProvider = forwardRef<Actions, SupabaseProviderProps>(
             //error,
             mutate,
             isLoading,
-        } = useMutablePlasmicQueryData([queryName, JSON.stringify(filters)], fetchData, {
+        } = useMutablePlasmicQueryData([queryName, JSON.stringify(filters), limit, offset, returnCount], fetchData, {
             shouldRetryOnError: false
         });
 
         //When fetchData function is rebuilt, re-fetch the data
         useEffect(() => {
             mutate();
-        }, [tableName, columns, memoizedFilters]);
+        }, [tableName, columns, memoizedFilters, limit, offset, returnCount]);
 
         //Function that just returns the data unchanged
         //To pass in as an optimistic update function when no optimistic update is desired
@@ -149,11 +162,25 @@ export const SupabaseProvider = forwardRef<Actions, SupabaseProviderProps>(
         //TODO - Add optimistic update functions
         //Function to add a row to existing data optimistically
         const addRowOptimistically = useCallback(
-            (currentRows: Rows, optimisticRecord: RowWithoutId | Row ) => {
-                console.log(JSON.stringify(optimisticRecord))
-            
-            const optimisticRecords = [...(currentRows || []), optimisticRecord];
-            return optimisticRecords;
+            (currentRows: Rows, optimisticRow: RowWithoutId | Row ) => {
+                console.log(currentRows)
+                console.log(optimisticRow)
+                console.log(Array.isArray(optimisticRow))
+                const optimisticRows = [...(currentRows.data || []), optimisticRow];
+                let optimisticCount
+                    if (currentRows.count === null) {
+                        optimisticCount = null
+                    }
+                    else if (Array.isArray(optimisticRow)) {
+                        optimisticCount = currentRows.count + optimisticRow.length
+                    }
+                    else {
+                        optimisticCount = currentRows.count + 1
+                    }
+                console.log(optimisticRows)
+                const optimisticReturn = {count: optimisticCount, data: optimisticRows}
+                console.log(optimisticReturn)
+                return optimisticReturn;
             },
             []
         );
@@ -182,7 +209,8 @@ export const SupabaseProvider = forwardRef<Actions, SupabaseProviderProps>(
               if (error) {
                 throw error;
               }                                     
-              return data;
+              
+              return shouldReturnRow ?  data : [] //if not specified to return the added row, return an empty array to indicate success
             },
             [tableName, simulateRandomMutationErrors]
         );
@@ -215,44 +243,45 @@ export const SupabaseProvider = forwardRef<Actions, SupabaseProviderProps>(
         //Define element actions to run from Plasmic Studio
         useImperativeHandle(ref, () => ({
             //Element action to add a record with optional optimistic update & auto-refetch when done
-            addRow: async (rowForSupabase, optimisticRow, shouldReturnRow) => {
-            setIsMutating(true);
+            addRow: async (rowForSupabase, optimisticRow, shouldReturnRow = false, disableRefetchAfterMutation = false) => { // default values for backward compatibility
+                setIsMutating(true);
     
-            //Choose the optimistic function based on whether the user has specified optimisticRow
-            //No optimisticRow means the returnUnchangedData func will be used, disabling optimistic update
-            let optimisticOperation = optimisticRow ? "addRow" : null;
-            const optimisticFunc = chooseOptimisticFunc(
-                optimisticOperation,
-                "Add Row"
-            );
-    
-            optimisticRow = { ...optimisticRow, optimisticId: uuid(), isOptimistic: true };
-    
-            //Run the mutation
-            try {
-                const result = await mutate(addRow(rowForSupabase, shouldReturnRow), {
-                optimisticData: (currentRows: Rows) => optimisticFunc(currentRows, optimisticRow),
-                populateCache: false,
-                revalidate: true,
-                rollbackOnError: true
-                });
-                return result;
-    
-            } catch(err) {
-                const supabaseProviderError = {
-                errorId: uuid(),
-                summary: 'Error adding row',
-                errorObject: err,
-                actionAttempted: 'insert',
-                rowForSupabase: rowForSupabase || null,
-                optimisticRow: optimisticRow || null,
-                recordId: null
-                };
-                if (onError && typeof onError === 'function') {
-                    onError(supabaseProviderError);
+                //Choose the optimistic function based on whether the user has specified optimisticRow
+                //No optimisticRow means the returnUnchangedData func will be used, disabling optimistic update
+                let optimisticOperation = optimisticRow ? "addRow" : null;
+                const optimisticFunc = chooseOptimisticFunc(
+                    optimisticOperation,
+                    "Add Row"
+                );
+        
+                optimisticRow = { ...optimisticRow, optimisticId: uuid(), isOptimistic: true };
+        
+                //Run the mutation
+                try {
+                    const result = await mutate(addRow(rowForSupabase, shouldReturnRow), {
+                    optimisticData: (currentRows: Rows) => optimisticFunc(currentRows, optimisticRow),
+                    populateCache: false,
+                    revalidate: !disableRefetchAfterMutation,
+                    rollbackOnError: true
+                    });
+                    return result;
+        
+                } catch(err) {
+                    console.error(err)
+                    const supabaseProviderError = {
+                    errorId: uuid(),
+                    summary: 'Error adding row',
+                    errorObject: err,
+                    actionAttempted: 'insert',
+                    rowForSupabase: rowForSupabase || null,
+                    optimisticRow: optimisticRow || null,
+                    recordId: null
+                    };
+                    if (onError && typeof onError === 'function') {
+                        onError(supabaseProviderError);
+                    }
+                    return { error: supabaseProviderError };
                 }
-                return { error: supabaseProviderError };
-            }
             },
         }));
     
@@ -261,7 +290,7 @@ export const SupabaseProvider = forwardRef<Actions, SupabaseProviderProps>(
             <div className={className}>
                 <DataProvider
                 name={queryName}
-                data={{ data, isLoading, isMutating, fetchError }}
+                data={{ data: data?.data, count: data?.count, isLoading, isMutating, fetchError }}
                 >
                 {children}
                 </DataProvider>

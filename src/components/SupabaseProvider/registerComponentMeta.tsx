@@ -125,6 +125,27 @@ export const SupabaseProviderMeta : CodeComponentMeta<SupabaseProviderProps> = {
       description:
         "Filters to execute during the query. Acceptable values are eq, neq, gt, lt, gte, lte.",
     },
+    limit: {
+      type: "number",
+      step: 1,
+      min: 0,
+      required: false,
+      description: 'Number of records to fetch'
+    },
+    offset: {
+      type: "number",
+      step: 1,
+      min: 0,
+      required: false,
+      description: 'Number of records to skip'
+    },
+    returnCount: {
+      type: "choice",
+      options: ["none", "exact", "planned", "estimated"],
+      defaultValue: "none",
+      required: false,
+      description: 'Count algorithm to use to count rows in the table or view. `"none"`: Don\'t return a count. `"exact"`: Exact but slow count algorithm. Performs a `COUNT(*)` under the hood. `"planned"`: Approximated but fast count algorithm. Uses the Postgres statistics under the hood. `"estimated"`: Uses exact count for low numbers and planned count for high numbers.'
+    },
     onError: {
       type: "eventHandler",
       argTypes: [{name: 'supabaseProviderError', type: 'object'}],
@@ -232,7 +253,8 @@ export const SupabaseProviderMeta : CodeComponentMeta<SupabaseProviderProps> = {
       argTypes: [
         { name: "rowForSupabase", type: "object", displayName: "Row object to send to Supabase" },
         { name: "optimisticRow", type: "object", displayName: "Optimistic new row object (optional)"},
-        { name: "shouldReturnRow", type: "boolean", displayName: "Return added row/s? (Returns null if false)"}
+        { name: "shouldReturnRow", type: "boolean", displayName: "Return added row/s? (Returns [] if false)"},
+        { name: "disableRefetchAfterMutation", type:"boolean", displayName: "Disable refetch data after row added?"},
       ],
     },
     editRow: {
